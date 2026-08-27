@@ -234,21 +234,22 @@ async def mark_attendance(payload: AttendanceCreateRequest):
                 detail="This QR code belongs to a different course. Please scan the correct QR code."
             )
 
-        # --- Same device can't mark attendance for this course twice in
-        # one day (per-browser device_id, sent by the frontend). Blocks
-        # one phone being used to check in multiple different students. ---
+        # --- Same device can only mark ONE attendance per day, period —
+        # not scoped to this course, so switching the course dropdown and
+        # resubmitting doesn't bypass it (per-browser device_id, sent by
+        # the frontend). Blocks one phone checking in multiple students,
+        # even across different courses. ---
         clean_device_id = (payload.device_id or "").strip()
         if clean_device_id:
             device_dup = supabase.table("attendance_logs") \
                 .select("id") \
                 .eq("device_id", clean_device_id) \
-                .eq("course_id", clean_course_id) \
                 .gte("captured_at", today_start_utc_iso()) \
                 .execute()
             if device_dup.data:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Attendance has already been marked from this device for this course today."
+                    detail="Attendance has already been marked from this device today."
                 )
 
         # --- Each course's students live in their own table — first look up
