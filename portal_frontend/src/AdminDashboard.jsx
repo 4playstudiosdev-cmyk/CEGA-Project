@@ -281,9 +281,14 @@ export default function AdminDashboard({ onLogout }) {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
             {activeTab === 'attendance' && (
-              <button onClick={exportToExcel} disabled={exporting} className="btn btn-outline-blue">
-                {exporting ? '⏳ Generating...' : '📥 Export to Excel'}
-              </button>
+              <>
+                <button onClick={fetchData} disabled={loading} className="btn btn-outline-blue">
+                  {loading ? '⏳ Refreshing...' : '🔄 Refresh'}
+                </button>
+                <button onClick={exportToExcel} disabled={exporting} className="btn btn-outline-blue">
+                  {exporting ? '⏳ Generating...' : '📥 Export to Excel'}
+                </button>
+              </>
             )}
             {activeTab === 'students' && (
               <button onClick={() => setIsModalOpen(true)} className="btn btn-primary">
