@@ -32,6 +32,15 @@ def today_in_karachi() -> str:
     return datetime.now(KARACHI_TZ).date().isoformat()
 
 
+def today_start_utc_iso() -> str:
+    """Aaj (Asia/Karachi) ke din ki shuruat, UTC isoformat me — same-day
+    duplicate checks (device_id ya student ke against) isi boundary se
+    'aaj' ka matlab decide karte hain."""
+    return datetime.combine(
+        datetime.now(KARACHI_TZ).date(), datetime.min.time(), tzinfo=KARACHI_TZ
+    ).astimezone(timezone.utc).isoformat()
+
+
 def parse_supabase_timestamp(iso_timestamp: str) -> datetime:
     """Supabase/Postgres timestamps ke fractional seconds kabhi kabhi
     non-standard length (5 digits jaise .11701, trailing zero trim ho
@@ -125,6 +134,7 @@ class AttendanceCreateRequest(BaseModel):
     student_name: str = Field(..., json_schema_extra={"example": "Ali Ahmed"}, description="Student's Full Name")
     course_id: str = Field(..., json_schema_extra={"example": "8f3b2a1c-1234-5678-90ab-cdef12345678"}, description="Course UUID")
     token: str = Field(..., json_schema_extra={"example": "aBc123..."}, description="Today's QR code token")
+    device_id: Optional[str] = Field(None, description="Anonymous per-browser device ID, used to block repeat scans from the same device on the same day")
 
 class AttendanceResponse(BaseModel):
     status: str
@@ -157,6 +167,13 @@ class ManualAttendanceResponse(BaseModel):
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Attendance Portal Backend API working successfully!"}
+
+
+@app.get("/health")
+def health_check():
+    """Railway (aur koi bhi uptime monitor) isi route se check karta hai
+    ke app zinda hai — hamesha 200 return karta hai, DB tak touch nahi karta."""
+    return {"status": "ok"}
 
 
 @app.post("/api/v1/attendance", response_model=AttendanceResponse, status_code=status.HTTP_201_CREATED)
@@ -216,6 +233,23 @@ async def mark_attendance(payload: AttendanceCreateRequest):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This QR code belongs to a different course. Please scan the correct QR code."
             )
+
+        # --- Same device can't mark attendance for this course twice in
+        # one day (per-browser device_id, sent by the frontend). Blocks
+        # one phone being used to check in multiple different students. ---
+        clean_device_id = (payload.device_id or "").strip()
+        if clean_device_id:
+            device_dup = supabase.table("attendance_logs") \
+                .select("id") \
+                .eq("device_id", clean_device_id) \
+                .eq("course_id", clean_course_id) \
+                .gte("captured_at", today_start_utc_iso()) \
+                .execute()
+            if device_dup.data:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Attendance has already been marked from this device for this course today."
+                )
 
         # --- Each course's students live in their own table — first look up
         # courses.students_table to find which table this course_id's students
@@ -310,7 +344,8 @@ async def mark_attendance(payload: AttendanceCreateRequest):
             "student_name": registered_student["name"],
             "registered_student_id": registered_student["id"],
             "course_id": clean_course_id,
-            "captured_at": current_time
+            "captured_at": current_time,
+            "device_id": clean_device_id or None,
         }
 
         # Debug log: agla error aaye to terminal me exact payload turant dikhega
@@ -402,15 +437,11 @@ async def mark_attendance_manual(payload: ManualAttendanceRequest):
             )
 
         # Aaj (Asia/Karachi) ke liye duplicate check — dobara insert na ho
-        today_start_utc = datetime.combine(
-            datetime.now(KARACHI_TZ).date(), datetime.min.time(), tzinfo=KARACHI_TZ
-        ).astimezone(timezone.utc).isoformat()
-
         existing = supabase.table("attendance_logs") \
             .select("id") \
             .eq("registered_student_id", student["id"]) \
             .eq("course_id", clean_course_id) \
-            .gte("captured_at", today_start_utc) \
+            .gte("captured_at", today_start_utc_iso()) \
             .execute()
 
         if existing.data:

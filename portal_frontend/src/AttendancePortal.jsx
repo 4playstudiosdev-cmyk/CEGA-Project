@@ -1,16 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { getCourseBadge } from './courseBadge';
+import { compareRollNumbers } from './rollNumberSort';
 import QrDisplay from './QrDisplay';
 import cegaLogo from './assets/cega-logo.png';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://attendance-portal-backend-production.up.railway.app';
+const DEVICE_ID_KEY = 'cega_attendance_device_id';
+
+// Har device (browser) ko ek permanent random ID deta hai — QR bar-bar
+// scan karke alag-alag students ke naam se attendance marna rokne ke
+// liye backend isi ID se check karta hai (localStorage me save rehti
+// hai, browser data clear na ho to hamesha wahi ID milegi).
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (!id) {
+      id = (crypto.randomUUID && crypto.randomUUID()) || `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return '';
+  }
+}
 
 export default function AttendancePortal({ onOpenAdmin, qrToken }) {
   const [studentId, setStudentId] = useState('');
   const [studentName, setStudentName] = useState('');
   const [selectedCourse, setSelectedCourse] = useState('');
   const [courses, setCourses] = useState([]);
+  const [courseStudents, setCourseStudents] = useState([]);
+  const [studentsLoading, setStudentsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ type: '', message: '' });
 
@@ -19,7 +40,7 @@ export default function AttendancePortal({ onOpenAdmin, qrToken }) {
       try {
         const { data, error } = await supabase
           .from('courses')
-          .select('id, code, name');
+          .select('id, code, name, students_table');
 
         if (error) {
           console.error('Supabase fetch error:', error);
@@ -33,6 +54,53 @@ export default function AttendancePortal({ onOpenAdmin, qrToken }) {
     fetchCourses();
   }, []);
 
+  // Course badalte hi us course ke registered students (roll_number +
+  // name) load karo — dropdown isi list se banega.
+  useEffect(() => {
+    setStudentId('');
+    setStudentName('');
+    setCourseStudents([]);
+
+    const course = courses.find((c) => c.id === selectedCourse);
+    if (!course?.students_table) return;
+
+    let cancelled = false;
+    setStudentsLoading(true);
+
+    supabase
+      .from(course.students_table)
+      .select('roll_number, name')
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          console.error('Students fetch error:', error);
+          return;
+        }
+        const sorted = (data || []).slice().sort((a, b) => compareRollNumbers(a.roll_number, b.roll_number));
+        setCourseStudents(sorted);
+      })
+      .finally(() => {
+        if (!cancelled) setStudentsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCourse, courses]);
+
+  const selectedStudent = courseStudents.find((s) => s.roll_number === studentId);
+  // Naam sirf tab editable hai jab is roll number ka koi canonical naam
+  // record me abhi tak set nahi hua (pehli attendance hi naam set karti
+  // hai) — warna dropdown se aaya naam fixed rehta hai, edit nahi hota.
+  const nameIsLocked = Boolean(selectedStudent?.name);
+
+  const handleStudentIdChange = (e) => {
+    const rollNumber = e.target.value;
+    setStudentId(rollNumber);
+    const student = courseStudents.find((s) => s.roll_number === rollNumber);
+    setStudentName(student?.name || '');
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -41,7 +109,7 @@ export default function AttendancePortal({ onOpenAdmin, qrToken }) {
       return;
     }
 
-    if (!selectedCourse || !studentId || !studentName) {
+    if (!selectedCourse || !studentId || !studentName.trim()) {
       setStatus({ type: 'error', message: 'Please fill all fields.' });
       return;
     }
@@ -58,6 +126,7 @@ export default function AttendancePortal({ onOpenAdmin, qrToken }) {
           student_name: studentName.trim(),
           course_id: selectedCourse,
           token: qrToken,
+          device_id: getDeviceId(),
         }),
       });
 
@@ -66,9 +135,9 @@ export default function AttendancePortal({ onOpenAdmin, qrToken }) {
         const serverDetail = typeof errorData.detail === 'string'
           ? errorData.detail
           : JSON.stringify(errorData.detail) || 'Server error occurred.';
-        // 400-series = expected/validated errors (already friendly Urdu/English
-        // text from backend, e.g. "Ye Student ID registered nahi hai...") —
-        // dikhao as-is. 500-series = genuine server error, technical prefix rakho.
+        // 400-series = expected/validated errors (already friendly text
+        // from backend, e.g. "This Student ID is not registered...") —
+        // show as-is. 500-series = genuine server error, keep technical prefix.
         throw new Error(response.status < 500 ? serverDetail : `Server Error (${response.status}): ${serverDetail}`);
       }
 
@@ -162,15 +231,27 @@ export default function AttendancePortal({ onOpenAdmin, qrToken }) {
 
             <div className="field-group">
               <label className="field-label" htmlFor="student-id">Student ID</label>
-              <input
+              <select
                 id="student-id"
-                type="text"
                 value={studentId}
-                onChange={(e) => setStudentId(e.target.value)}
-                placeholder="e.g. CEGA-24-001"
-                className="input-dark"
+                onChange={handleStudentIdChange}
+                className="input-dark select-dark"
+                disabled={!selectedCourse || studentsLoading}
                 required
-              />
+              >
+                <option value="">
+                  {!selectedCourse
+                    ? 'Select a course first...'
+                    : studentsLoading
+                    ? 'Loading students...'
+                    : 'Select your Student ID...'}
+                </option>
+                {courseStudents.map((s) => (
+                  <option key={s.roll_number} value={s.roll_number}>
+                    {s.roll_number}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="field-group">
@@ -180,8 +261,9 @@ export default function AttendancePortal({ onOpenAdmin, qrToken }) {
                 type="text"
                 value={studentName}
                 onChange={(e) => setStudentName(e.target.value)}
-                placeholder="As registered in the system"
+                placeholder={nameIsLocked ? '' : 'First time? Type your name here'}
                 className="input-dark"
+                readOnly={nameIsLocked}
                 required
               />
             </div>
