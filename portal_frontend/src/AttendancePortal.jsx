@@ -4,6 +4,7 @@ import { getCourseBadge } from './courseBadge';
 import { compareRollNumbers } from './rollNumberSort';
 import QrDisplay from './QrDisplay';
 import cegaLogo from './assets/cega-logo.png';
+import dreambyteLogo from './assets/dreambyte-logo.png';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://attendance-portal-backend-production.up.railway.app';
 const DEVICE_ID_KEY = 'cega_attendance_device_id';
@@ -277,6 +278,13 @@ export default function AttendancePortal({ onOpenAdmin, qrToken }) {
               )}
             </button>
           </form>
+          )}
+
+          {qrToken && (
+            <div className="dev-credit">
+              <span className="muted-mono">Developed by DreamByte Studio</span>
+              <img src={dreambyteLogo} alt="DreamByte Studio" className="dev-credit-logo" />
+            </div>
           )}
         </div>
       </main>
